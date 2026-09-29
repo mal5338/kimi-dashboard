@@ -253,7 +253,8 @@
   html.is-pad .sp-divider, html.is-phone .sp-divider,
   html.is-pad .sp-tabbar, html.is-phone .sp-tabbar,
   html.is-pad #sp-menu-btn, html.is-phone #sp-menu-btn { display: none !important; }
-  html.is-pad .sp-mclose, html.is-phone .sp-mclose { display: inline-flex !important; }
+  /* 触控端：隐藏关闭悬浮钮，返回靠系统边缘滑动手势（history 后退） */
+  html.is-pad .sp-mclose, html.is-phone .sp-mclose { display: none !important; }
   /* 触控端会话视图：隐藏终端悬浮钮（终端入口在列表头部），避免叠在会话页头部上 */
   html.is-pad #sp-term-btn, html.is-phone #sp-term-btn { display: none !important; }
   /* 触控端终端：恢复标签栏（＋/关签/隐藏），列表头终端入口仅触控显示 */
@@ -2027,6 +2028,16 @@
       spMarkSel();
       spRecordDash();
     }
+    // 触控端：打开会话/文件视图时压入历史栈，系统边缘滑动返回（popstate）即收起面板，
+    // 而不是退出应用
+    function spPushHistory() {
+      try { history.pushState({ kdSp: 1 }, ''); } catch (err) {}
+    }
+    window.addEventListener('popstate', () => {
+      if (!spTouch()) return;
+      if (!document.body.classList.contains('sp-collapsed')) closeSessionPane();
+    });
+
     function spOpenSessionTab(s) {
       let t = spTabs.find((x) => x.kind === 'session' && x.sid === s.sessionId);
       if (!t) {
@@ -2039,6 +2050,7 @@
         fr.addEventListener('load', () => { spHideLoading(); injectWideCss(fr, t.url); });
       }
       if (spTouch()) {   // 触控端：单视图，独占整屏
+        spPushHistory();   // 压入历史：边缘滑动返回收起面板
         spTabs.filter((x) => x.id !== t.id).forEach((x) => {
           if (x.pdfDoc) { try { x.pdfDoc.destroy(); } catch (e) {} }
           if (spViews[x.id]) { spViews[x.id].remove(); delete spViews[x.id]; }
@@ -2074,6 +2086,7 @@
           + '<div class="sp-fbody"><div class="fb-empty">加载中…</div></div>';
       }
       if (spTouch()) {   // 触控端：单视图，独占整屏
+        spPushHistory();   // 压入历史：边缘滑动返回收起面板
         spTabs.filter((x) => x.id !== t.id).forEach((x) => {
           if (x.pdfDoc) { try { x.pdfDoc.destroy(); } catch (e) {} }
           if (spViews[x.id]) { spViews[x.id].remove(); delete spViews[x.id]; }
