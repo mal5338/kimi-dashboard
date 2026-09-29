@@ -6,6 +6,7 @@
 import faulthandler
 import codecs
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -1018,6 +1019,29 @@ def sys_worker():
 
 _scan_cache = {"ts": 0.0, "result": None}
 
+# ---- index.html 资源抽离：CSS/JS 抽为带内容 hash 的静态文件（长缓存），骨架仅剩引用 ----
+# 工作流不变：仍只编辑 public/index.html，服务端输出时自动转换
+_asset_cache = {}                            # "/app.<hash>.css|js" -> bytes
+_html_xform = {"mtime": None, "skeleton": b""}
+
+def _xform_index(raw: str) -> str:
+    i = raw.find("<body")
+    head, body = (raw[:i], raw[i:]) if i >= 0 else ("", raw)
+    css_parts, js_parts = [], []
+    head = re.sub(r"<style>(.*?)</style>", lambda m: (css_parts.append(m.group(1)), "")[1], head, flags=re.S)
+    body = re.sub(r"<script>(.*?)</script>", lambda m: (js_parts.append(m.group(1)), "")[1], body, flags=re.S)
+    if css_parts:
+        css = "\n".join(css_parts)
+        chash = hashlib.sha1(css.encode()).hexdigest()[:10]
+        _asset_cache[f"/app.{chash}.css"] = css.encode()
+        head = head.replace("</head>", f'<link rel="stylesheet" href="/app.{chash}.css"></head>')
+    if js_parts:
+        js = "\n".join(js_parts)   # 保持原顺序合并（主块 + 尾部小块）
+        jhash = hashlib.sha1(js.encode()).hexdigest()[:10]
+        _asset_cache[f"/app.{jhash}.js"] = js.encode()
+        body = body.replace("</body>", f'<script src="/app.{jhash}.js" defer></script></body>')
+    return head + body
+
 
 def todo_worker():
     """每 5 分钟读取个人知识库的未完成任务。"""
@@ -1906,22 +1930,37 @@ class Handler(BaseHTTPRequestHandler):
             ctype = "application/manifest+json" if url.endswith(".webmanifest") else ("text/html; charset=utf-8" if url.endswith(".html") else "image/png")
             self.send_response(200)
             self.send_header("Content-Type", ctype)
-            self.send_header("Cache-Control", "no-store" if url.endswith(".html") else "public, max-age=3600")
+            self.send_header("Cache-Control", "no-store" if url.endswith(".html") else "public, max-age=604800")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
         if url in ("/", "/index.html"):
             try:
-                body = (PUBLIC_DIR / "index.html").read_bytes()
-                ver = str(int((PUBLIC_DIR / "index.html").stat().st_mtime * 1000)).encode()
-                body = body.replace(b"__PAGE_VER__", ver)
+                p = PUBLIC_DIR / "index.html"
+                mt = p.stat().st_mtime
+                if _html_xform["mtime"] != mt:
+                    _html_xform["mtime"] = mt
+                    _html_xform["skeleton"] = _xform_index(p.read_text("utf-8")).encode("utf-8")
+                body = _html_xform["skeleton"].replace(b"__PAGE_VER__", str(int(mt * 1000)).encode())
             except OSError:
                 self.send_error(500, "index.html missing")
                 return
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if url.startswith("/app.") and (url.endswith(".css") or url.endswith(".js")):
+            body = _asset_cache.get(url)
+            if body is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/css" if url.endswith(".css") else "application/javascript")
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

@@ -861,23 +861,36 @@
     let PAGE_VER = (document.querySelector('meta[name="page-ver"]') || {}).content || '';
     let pageUpdating = false;
 
-    // 热更新：原地替换样式与脚本，不重载文档（全屏状态保持）
+    // 热更新：原地替换样式外链/脚本/DOM，不重载文档（全屏状态保持）。
+    // 资源已抽离为 /app.<hash>.css|js（immutable）：hash 变了才换 link；脚本按 src 重建重执行
     async function hotUpdate() {
       const res = await fetch(location.pathname + '?_v=' + Date.now(), { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const html = await res.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      const newStyle = doc.querySelector('style');
-      if (newStyle) document.querySelector('style').outerHTML = newStyle.outerHTML;
       const newMeta = doc.querySelector('meta[name="page-ver"]');
-      if (newMeta) { const curMeta = document.querySelector('meta[name="page-ver"]'); if (curMeta) curMeta.content = newMeta.content; }
+      const curLink = document.querySelector('link[rel="stylesheet"][href*="/app."]');
+      const newLink = doc.querySelector('link[rel="stylesheet"][href*="/app."]');
+      if (newLink && (!curLink || curLink.getAttribute('href') !== newLink.getAttribute('href'))) {
+        const nl = document.createElement('link');
+        nl.rel = 'stylesheet';
+        nl.href = newLink.getAttribute('href');
+        if (curLink) curLink.replaceWith(nl); else document.head.appendChild(nl);
+      }
       try { es.close(); stopPolling(); } catch {}
       const scripts = [];
-      doc.body.querySelectorAll('script').forEach((s) => { scripts.push(s.textContent); s.remove(); });
+      doc.body.querySelectorAll('script').forEach((s) => {
+        scripts.push(s.getAttribute('src') || { inline: s.textContent });
+        s.remove();
+      });
       const cur = document.body;
       while (cur.firstChild) cur.firstChild.remove();
       Array.from(doc.body.childNodes).forEach((n) => cur.appendChild(document.importNode(n, true)));
-      scripts.forEach((code) => { const s = document.createElement('script'); s.textContent = code; cur.appendChild(s); });
+      scripts.forEach((item) => {
+        const s = document.createElement('script');
+        if (typeof item === 'string') s.src = item; else s.textContent = item.inline;
+        cur.appendChild(s);
+      });
     }
 
     function checkPageVer(d) {
@@ -2807,28 +2820,29 @@
     // vendor 懒加载（Promise 缓存；失败可重试并降级）
     const fbVendors = {};
     function loadVendor(kind) {
+      const VVER = encodeURIComponent(PAGE_VER || '');   // vendor 带 mtime 版本参数，更新不撞长缓存
       if (fbVendors[kind]) return fbVendors[kind];
       fbVendors[kind] = new Promise((resolve, reject) => {
         if (kind === 'hljs' && !document.getElementById('fb-hl-theme')) {
           const l = document.createElement('link');
           l.id = 'fb-hl-theme';
           l.rel = 'stylesheet';
-          l.href = 'vendor/highlight-theme.css';
+          l.href = 'vendor/highlight-theme.css?v=' + VVER;
           document.head.appendChild(l);
         }
         const s = document.createElement('script');
         s.src = 'vendor/' + (kind === 'xlsx' ? 'xlsx.full.min.js'
-          : kind === 'pdfjs' ? 'pdf.min.js' : kind === 'xterm' ? 'xterm.js' : 'highlight.min.js');
+          : kind === 'pdfjs' ? 'pdf.min.js' : kind === 'xterm' ? 'xterm.js' : 'highlight.min.js') + '?v=' + VVER;
         if (kind === 'xterm' && !document.getElementById('vd-xterm-css')) {
           const l = document.createElement('link');
           l.id = 'vd-xterm-css';
           l.rel = 'stylesheet';
-          l.href = 'vendor/xterm.min.css';
+          l.href = 'vendor/xterm.min.css?v=' + VVER;
           document.head.appendChild(l);
         }
         s.onload = () => {
           if (kind === 'pdfjs' && window.pdfjsLib) {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js?v=' + VVER;
           }
           resolve();
         };
@@ -3053,6 +3067,9 @@
     if (Date.now() - window.__kdAlive > 120000) { location.reload(); }
   }, 10000);
 })();
+
 </script>
 </body>
 </html>
+
+// hot-update regression probe 1790646918
