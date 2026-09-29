@@ -1,0 +1,6 @@
+__pycache__/
+.DS_Store
+seen.json
+.filetoken
+*.log
+HANDOFF.md
